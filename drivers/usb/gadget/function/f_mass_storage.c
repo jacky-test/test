@@ -1062,29 +1062,36 @@ static int do_inquiry(struct fsg_common *common, struct fsg_buffhd *bh)
 	struct fsg_lun *curlun = common->curlun;
 	u8	*buf = (u8 *) bh->buf;
 
+	u8 VID[] = {'s','u','n','p','l','u','s', 0};
+	u8 PID[] = {'S','P','7','0','2','1', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+	u8 REV[] = {'V','1','.','0'};
+	u8 SER[] = {'S','P','0','0','0','1','2','5','4','A','7','3', 0, 0, 0, 0};
 	if (!curlun) {		/* Unsupported LUNs are okay */
 		common->bad_lun_okay = 1;
-		memset(buf, 0, 36);
+		memset(buf, 0, 255);
 		buf[0] = TYPE_NO_LUN;	/* Unsupported, no device-type */
-		buf[4] = 31;		/* Additional length */
-		return 36;
+		buf[4] = 250;		/* Additional length */
+		return 255;
 	}
 
 	buf[0] = curlun->cdrom ? TYPE_ROM : TYPE_DISK;
 	buf[1] = curlun->removable ? 0x80 : 0;
 	buf[2] = 2;		/* ANSI SCSI level 2 */
 	buf[3] = 2;		/* SCSI-2 INQUIRY data format */
-	buf[4] = 31;		/* Additional length */
+	buf[4] = 250;		/* Additional length */
 	buf[5] = 0;		/* No special options */
 	buf[6] = 0;
 	buf[7] = 0;
+	memcpy (&buf[8], VID, sizeof(VID));
+	memcpy (&buf[16], PID, sizeof(PID));
+	memcpy (&buf[32], REV, sizeof(REV));
+	memcpy (&buf[36], SER, sizeof(SER));
+
+	buf[44] = 0;
 	if (curlun->inquiry_string[0])
 		memcpy(buf + 8, curlun->inquiry_string,
 		       sizeof(curlun->inquiry_string));
-	else
-		memcpy(buf + 8, common->inquiry_string,
-		       sizeof(common->inquiry_string));
-	return 36;
+	return 255;
 }
 
 static int do_request_sense(struct fsg_common *common, struct fsg_buffhd *bh)
@@ -1801,6 +1808,10 @@ static int do_scsi_command(struct fsg_common *common)
 	int			i;
 	static char		unknown[16];
 
+	if (common->cmnd[0]!=TEST_UNIT_READY) {
+		printk(KERN_NOTICE">>> %s\n", __FUNCTION__);
+	}
+
 	dump_cdb(common);
 
 	/* Wait for the next buffer to become available for data or status */
@@ -1821,7 +1832,7 @@ static int do_scsi_command(struct fsg_common *common)
 		reply = check_command(common, 6, DATA_DIR_TO_HOST,
 				      (1<<4), 0,
 				      "INQUIRY");
-		if (reply == 0)
+		if (reply == 0 || reply==-EINVAL)
 			reply = do_inquiry(common, bh);
 		break;
 
@@ -2057,7 +2068,8 @@ unknown_cmnd:
 	if (reply == -EINTR || signal_pending(current))
 		return -EINTR;
 
-	/* Set up the single reply buffer for finish_reply() */
+	if (common->cmnd[0]!=TEST_UNIT_READY)
+		printk(KERN_NOTICE"reply = %d, common->data_dir = %d\n", reply, common->data_dir);
 	if (reply == -EINVAL)
 		reply = 0;		/* Error reply length */
 	if (reply >= 0 && common->data_dir == DATA_DIR_TO_HOST) {
@@ -2065,7 +2077,16 @@ unknown_cmnd:
 		bh->inreq->length = reply;
 		bh->state = BUF_STATE_FULL;
 		common->residue -= reply;
+		if (common->cmnd[0]==MODE_SENSE || 
+			common->cmnd[0]==READ_FORMAT_CAPACITIES ||
+			common->cmnd[0]==INQUIRY ||
+			common->cmnd[0]==READ_CAPACITY) common->residue = 0;
 	}				/* Otherwise it's already set */
+
+	if (common->cmnd[0]!=TEST_UNIT_READY) {
+		printk(KERN_NOTICE"reply = %d, bh->state = %d, common->residue = %d\n", reply, bh->state, common->residue);
+		printk(KERN_NOTICE"<<< %s\n", __FUNCTION__);
+	}
 
 	return 0;
 }
@@ -2902,6 +2923,8 @@ static int fsg_bind(struct usb_configuration *c, struct usb_function *f)
 	int			ret;
 	struct fsg_opts		*opts;
 
+	printk(KERN_NOTICE"<<< %s\n", __FUNCTION__);
+
 	/* Don't allow to bind if we don't have at least one LUN */
 	ret = _fsg_common_get_max_lun(common);
 	if (ret < 0) {
@@ -2974,6 +2997,8 @@ static int fsg_bind(struct usb_configuration *c, struct usb_function *f)
 			fsg_ss_function, fsg_ss_function);
 	if (ret)
 		goto autoconf_fail;
+
+	printk(KERN_NOTICE"<<< %s\n", __FUNCTION__);
 
 	return 0;
 
